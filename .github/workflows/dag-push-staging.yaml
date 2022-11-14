@@ -1,0 +1,56 @@
+name: Build Packages Staging using dag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build stage1 packages using dag
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      PROJECT: staging-images-183e
+      CLUSTER_NAME: tmp-cluster
+      CLUSTER_ZONE: us-central1-b
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '>=1.19.0'
+      - run: go install github.com/wolfi-dev/dag@latest
+
+      - uses: google-github-actions/auth@v0
+        with:
+          workload_identity_provider: "projects/567187841907/locations/global/workloadIdentityPools/staging-shared-9bd2/providers/staging-shared-gha"
+          service_account: "staging-images-ci@staging-images-183e.iam.gserviceaccount.com"
+      - uses: google-github-actions/setup-gcloud@v0
+        with:
+          project_id: ${{env.PROJECT}}
+
+      - name: Setup Build Cluster
+        run: |
+          gcloud container clusters create ${CLUSTER_NAME} \
+            --zone            ${CLUSTER_ZONE}  \
+            --release-channel rapid \
+            --workload-pool   "${PROJECT}.svc.id.goog" \
+            --machine-type    e2-standard-32 \
+            --num-nodes       1
+
+          gcloud container node-pools create arm-nodes \
+            --cluster        ${CLUSTER_NAME} \
+            --zone           ${CLUSTER_ZONE} \
+            --machine-type   t2a-standard-32 \
+            --num-nodes      1
+
+      # TODO: Use signing key in GCP Secret Manager, upload to GCS.
+      - run: dag pod --cpu=30 --ram=100Gi
+      - run: dag pod --cpu=30 --ram=100Gi --arch=arm64
+
+      - name: Teardown Build Cluster
+        if: ${{ always() }}
+        run: gcloud container clusters delete tmp-cluster --location=${CLUSTER_ZONE}
